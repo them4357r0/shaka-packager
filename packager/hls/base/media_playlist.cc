@@ -293,22 +293,25 @@ std::string ProgramDateTimeEntry::ToString() {
 }
 
 DateRangeEntry::DateRangeEntry(const media::TimedMetadataEvent& event,
-                               const absl::Time& start)
-    : HlsEntry(HlsEntry::EntryType::kDateRange), event_(event), start_(start) {}
+                               const absl::Time& start,
+                               int64_t duration_90k)
+    : HlsEntry(HlsEntry::EntryType::kDateRange),
+      event_(event),
+      start_(start),
+      duration_90k_(duration_90k) {}
 
 std::string DateRangeEntry::ToString() {
   // RFC 8216bis EXT-X-DATERANGE with the SCTE-35 attributes of section 4.4.5.1.
   std::string out = absl::StrFormat("#EXT-X-DATERANGE:ID=\"%s\",START-DATE=\"%s\"",
                                     event_.id, FormatUtcMillis(start_));
-  if (event_.duration_90k >= 0) {
+  if (duration_90k_ >= 0) {
     // A splice-out announces a planned break length; other cues carry a
     // duration that is known.
     out += absl::StrFormat(
         ",%s=%.3f",
         event_.scte35_class == media::Scte35Class::kOut ? "PLANNED-DURATION"
                                                          : "DURATION",
-        static_cast<double>(event_.duration_90k) /
-            media::kTimedMetadataTimeScale);
+        static_cast<double>(duration_90k_) / media::kTimedMetadataTimeScale);
   }
   const char* attribute = "SCTE35-CMD";
   if (event_.scte35_class == media::Scte35Class::kOut)
@@ -784,10 +787,26 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
       if (event.kind != media::TimedMetadataKind::kScte35)
         continue;
       // pts / 90000 s, kept in integer nanoseconds (100000 / 9 ns per tick).
-      const absl::Time start =
-          reference_time_ +
-          absl::Nanoseconds(event.pts_90k * int64_t{100000} / 9);
-      entries_.emplace_back(new DateRangeEntry(event, start));
+      auto to_time = [this](int64_t pts_90k) {
+        return reference_time_ + absl::Nanoseconds(pts_90k * int64_t{100000} / 9);
+      };
+      absl::Time start = to_time(event.pts_90k);
+      int64_t duration_90k = event.duration_90k;
+      if (event.scte35_class == media::Scte35Class::kIn) {
+        // RFC 8216bis 4.4.5.1: tags sharing an ID must agree on common
+        // attributes, so an IN that closes a known OUT with the same id
+        // carries the OUT's START-DATE and DURATION = IN - OUT. An IN without
+        // a (retained) OUT, or one before its OUT, stands alone.
+        const auto& store = timed_metadata_cursor_->store();
+        auto out = store ? store->FindEvent(media::TimedMetadataKind::kScte35,
+                                            event.id, media::Scte35Class::kOut)
+                         : std::nullopt;
+        if (out && out->pts_90k <= event.pts_90k) {
+          start = to_time(out->pts_90k);
+          duration_90k = event.pts_90k - out->pts_90k;
+        }
+      }
+      entries_.emplace_back(new DateRangeEntry(event, start, duration_90k));
     }
   }
 

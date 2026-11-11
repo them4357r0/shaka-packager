@@ -369,8 +369,11 @@ class ProgramDateTimeEntry : public HlsEntry {
 class DateRangeEntry : public HlsEntry {
  public:
   /// @param event a SCTE-35 event; |start| is its wall clock start date.
+  /// @param duration_90k overrides the event's duration when non-negative
+  ///        (used for an IN paired with its OUT).
   DateRangeEntry(const media::TimedMetadataEvent& event,
-                 const absl::Time& start);
+                 const absl::Time& start,
+                 int64_t duration_90k);
 
   std::string ToString() override;
 
@@ -380,6 +383,7 @@ class DateRangeEntry : public HlsEntry {
 
   const media::TimedMetadataEvent event_;
   const absl::Time start_;
+  const int64_t duration_90k_;
 };
 
 class EncryptionInfoEntry : public HlsEntry {

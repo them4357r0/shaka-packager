@@ -219,6 +219,18 @@ bool TimedMetadataStore::AddEvent(TimedMetadataEvent event) {
   return true;
 }
 
+std::optional<TimedMetadataEvent> TimedMetadataStore::FindEvent(
+    TimedMetadataKind kind,
+    const std::string& id,
+    Scte35Class cls) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& e : events_) {
+    if (e.kind == kind && e.id == id && e.scte35_class == cls)
+      return e;
+  }
+  return std::nullopt;
+}
+
 void TimedMetadataStore::MarkInputEnded() {
   {
     std::lock_guard<std::mutex> lock(mutex_);

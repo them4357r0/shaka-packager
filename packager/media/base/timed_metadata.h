@@ -99,6 +99,11 @@ class TimedMetadataStore {
   void MarkInputEnded();
   bool input_ended() const;
 
+  /// Returns the retained event with this (kind, id, class), if any.
+  std::optional<TimedMetadataEvent> FindEvent(TimedMetadataKind kind,
+                                              const std::string& id,
+                                              Scte35Class cls) const;
+
   size_t size() const;
   uint64_t next_seq() const;
   uint64_t evicted_count() const;
@@ -136,6 +141,9 @@ class TimedMetadataCursor {
   std::vector<TimedMetadataEvent> Take(int64_t start,
                                        int64_t duration,
                                        int32_t timescale);
+
+  /// The shared store (may be null), e.g. to look up the OUT of an IN.
+  const std::shared_ptr<TimedMetadataStore>& store() const { return store_; }
 
  private:
   std::shared_ptr<TimedMetadataStore> store_;
