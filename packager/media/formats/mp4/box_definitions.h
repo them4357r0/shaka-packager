@@ -249,6 +249,21 @@ struct ID3v2 : FullBox {
   std::vector<uint8_t> id3v2_data;
 };
 
+/// Event Message box, ISO/IEC 23009-1 section 5.10.3.3, version 1 only.
+struct EventMessage : FullBox {
+  DECLARE_BOX_METHODS(EventMessage);
+
+  static constexpr uint32_t kUnknownDuration = 0xFFFFFFFFu;
+
+  uint32_t timescale = 0u;
+  uint64_t presentation_time = 0u;
+  uint32_t event_duration = kUnknownDuration;
+  uint32_t id = 0u;
+  std::string scheme_id_uri;
+  std::string value;
+  std::vector<uint8_t> message_data;
+};
+
 struct Metadata : FullBox {
   DECLARE_BOX_METHODS(Metadata);
 

@@ -35,6 +35,8 @@ add_library(mp4 STATIC
   single_segment_segmenter.h
   sync_sample_iterator.cc
   sync_sample_iterator.h
+  timed_metadata_emsg.cc
+  timed_metadata_emsg.h
   track_run_iterator.cc
   track_run_iterator.h
   )
@@ -56,6 +58,7 @@ add_executable(mp4_unittest
   decoding_time_iterator_unittest.cc
   mp4_media_parser_unittest.cc
   sync_sample_iterator_unittest.cc
+  timed_metadata_emsg_unittest.cc
   track_run_iterator_unittest.cc
   )
 target_link_libraries(mp4_unittest

@@ -30,6 +30,7 @@
 #include <packager/media/formats/mp4/box_definitions.h>
 #include <packager/media/formats/mp4/fragmenter.h>
 #include <packager/media/formats/mp4/key_frame_info.h>
+#include <packager/media/formats/mp4/timed_metadata_emsg.h>
 #include <packager/status.h>
 #include <packager/version/version.h>
 
@@ -90,6 +91,9 @@ Status Segmenter::Initialize(
     fragmenters_[i].reset(
         new Fragmenter(streams[i], &moof_->tracks[i], edit_list_offset));
   }
+
+  if (auto store = GetGlobalTimedMetadataStore())
+    timed_metadata_cursor_.reset(new TimedMetadataCursor(std::move(store)));
 
   // Choose the first stream if there is no VIDEO.
   if (sidx_->reference_id == 0)
@@ -205,13 +209,28 @@ Status Segmenter::FinalizeSegment(size_t stream_id,
     mdat.data_size += static_cast<uint32_t>(fragmenters_[i]->data()->Size());
   }
 
+  // Out-of-band timed metadata (ID3 / SCTE-35) becomes 'emsg' boxes in front of
+  // the 'moof' of this fragment. Sample timing and fragment layout are not
+  // affected.
+  BufferWriter emsg_buffer;
+  size_t emsg_size = 0;
+  if (timed_metadata_cursor_ && segment_info.start_timestamp >= 0) {
+    emsg_size = WriteEventMessages(
+        timed_metadata_cursor_->Take(
+            segment_info.start_timestamp, segment_info.duration,
+            moov_->tracks[stream_id].media.header.timescale),
+        &emsg_buffer);
+  }
+
   // Generate segment reference.
   sidx_->references.resize(sidx_->references.size() + 1);
   fragmenters_[GetReferenceStreamId()]->GenerateSegmentReference(
       &sidx_->references[sidx_->references.size() - 1]);
   sidx_->references[sidx_->references.size() - 1].referenced_size =
-      data_offset + mdat.data_size;
+      emsg_size + data_offset + mdat.data_size;
 
+  if (emsg_size > 0)
+    fragment_buffer_->AppendBuffer(emsg_buffer);
   const uint64_t moof_start_offset = fragment_buffer_->Size();
 
   // Write the fragment to buffer.

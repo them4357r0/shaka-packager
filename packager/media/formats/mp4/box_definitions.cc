@@ -1420,6 +1420,38 @@ size_t ID3v2::ComputeSizeInternal() {
              : HeaderSize() + language.ComputeSize() + id3v2_data.size();
 }
 
+EventMessage::EventMessage() {
+  version = 1;
+}
+EventMessage::~EventMessage() = default;
+
+FourCC EventMessage::BoxType() const {
+  return FOURCC_emsg;
+}
+
+bool EventMessage::ReadWriteInternal(BoxBuffer* buffer) {
+  RCHECK(ReadWriteHeaderInternal(buffer));
+  // Only version 1 (64 bit presentation_time) is supported.
+  RCHECK(version == 1);
+  RCHECK(buffer->ReadWriteUInt32(&timescale) &&
+         buffer->ReadWriteUInt64(&presentation_time) &&
+         buffer->ReadWriteUInt32(&event_duration) &&
+         buffer->ReadWriteUInt32(&id) &&
+         buffer->ReadWriteCString(&scheme_id_uri) &&
+         buffer->ReadWriteCString(&value));
+  RCHECK(buffer->ReadWriteVector(
+      &message_data, buffer->Reading() ? buffer->BytesLeft()
+                                       : message_data.size()));
+  return true;
+}
+
+size_t EventMessage::ComputeSizeInternal() {
+  version = 1;
+  return HeaderSize() + sizeof(timescale) + sizeof(presentation_time) +
+         sizeof(event_duration) + sizeof(id) + scheme_id_uri.size() + 1 +
+         value.size() + 1 + message_data.size();
+}
+
 Metadata::Metadata() = default;
 Metadata::~Metadata() = default;
 

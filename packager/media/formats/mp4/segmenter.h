@@ -15,6 +15,7 @@
 #include <packager/macros/classes.h>
 #include <packager/media/base/encryption_config.h>
 #include <packager/media/base/range.h>
+#include <packager/media/base/timed_metadata.h>
 #include <packager/media/formats/mp4/box_definitions.h>
 #include <packager/status.h>
 
@@ -159,6 +160,9 @@ class Segmenter {
   size_t num_samples_ = 0;
   std::vector<uint64_t> stream_durations_;
   std::vector<KeyFrameInfo> key_frame_infos_;
+  // Only set when --timed_metadata_input is used; selects the events that
+  // are written as emsg boxes in front of each fragment.
+  std::unique_ptr<TimedMetadataCursor> timed_metadata_cursor_;
   // Only set for AES-128; holds key/IV for whole-segment encryption.
   EncryptionConfig aes128_encryption_config_;
 
