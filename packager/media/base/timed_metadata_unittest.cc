@@ -139,6 +139,76 @@ TEST(TimedMetadataStoreTest, DedupeAndBound) {
   EXPECT_EQ("b", sel[0].id);
 }
 
+TimedMetadataEvent Sc(const std::string& id, Scte35Class cls, int64_t pts) {
+  TimedMetadataEvent e;
+  e.kind = TimedMetadataKind::kScte35;
+  e.id = id;
+  e.scte35_class = cls;
+  e.pts_90k = pts;
+  e.payload = {0xfc};
+  return e;
+}
+
+// splice_insert OUT and IN share splice_event_id, hence the product event id.
+TEST(TimedMetadataStoreTest, OutAndInWithSameIdAreBothKept) {
+  TimedMetadataStore store;
+  EXPECT_TRUE(store.AddEvent(Sc("1000", Scte35Class::kOut, 100)));
+  EXPECT_TRUE(store.AddEvent(Sc("1000", Scte35Class::kIn, 900)));
+  EXPECT_EQ(2u, store.size());
+  uint64_t next = 0;
+  auto sel = store.Select(0, 1000, 90000, std::nullopt, &next);
+  ASSERT_EQ(2u, sel.size());
+  EXPECT_EQ(Scte35Class::kOut, sel[0].scte35_class);
+  EXPECT_EQ(Scte35Class::kIn, sel[1].scte35_class);
+  // Distinct emsg ids; the first keeps the plain derivation.
+  EXPECT_EQ(1000u, *sel[0].emsg_id);
+  EXPECT_NE(*sel[0].emsg_id, *sel[1].emsg_id);
+}
+
+TEST(TimedMetadataStoreTest, ExactResendStillDropped) {
+  TimedMetadataStore store;
+  EXPECT_TRUE(store.AddEvent(Sc("1000", Scte35Class::kOut, 100)));
+  EXPECT_FALSE(store.AddEvent(Sc("1000", Scte35Class::kOut, 100)));
+  // A re-send is dropped even with a different pts or payload.
+  EXPECT_FALSE(store.AddEvent(Sc("1000", Scte35Class::kOut, 500)));
+  EXPECT_TRUE(store.AddEvent(Sc("1000", Scte35Class::kIn, 900)));
+  EXPECT_FALSE(store.AddEvent(Sc("1000", Scte35Class::kIn, 900)));
+  EXPECT_EQ(2u, store.size());
+}
+
+TEST(TimedMetadataStoreTest, CmdWithSameIdAsOutKeptSeparately) {
+  TimedMetadataStore store;
+  EXPECT_TRUE(store.AddEvent(Sc("5", Scte35Class::kOut, 1)));
+  EXPECT_TRUE(store.AddEvent(Sc("5", Scte35Class::kCmd, 2)));
+  EXPECT_TRUE(store.AddEvent(Sc("5", Scte35Class::kIn, 3)));
+  EXPECT_FALSE(store.AddEvent(Sc("5", Scte35Class::kCmd, 2)));
+  EXPECT_EQ(3u, store.size());
+  uint64_t next = 0;
+  auto sel = store.Select(0, 100, 90000, std::nullopt, &next);
+  ASSERT_EQ(3u, sel.size());
+  EXPECT_NE(*sel[0].emsg_id, *sel[1].emsg_id);
+  EXPECT_NE(*sel[0].emsg_id, *sel[2].emsg_id);
+  EXPECT_NE(*sel[1].emsg_id, *sel[2].emsg_id);
+}
+
+TEST(TimedMetadataStoreTest, Id3AndScte35SameIdIndependent) {
+  TimedMetadataStore store;
+  EXPECT_TRUE(store.AddEvent(Ev("9", 1)));
+  EXPECT_TRUE(store.AddEvent(Sc("9", Scte35Class::kNone, 1)));
+}
+
+TEST(TimedMetadataReaderTest, OutInSameIdThroughFeed) {
+  TimedMetadataStore store;
+  TimedMetadataReader::LineState st;
+  const std::string feed =
+      "MPTM1 scte35 100 2700000 OUT 1000 /DAW\n"
+      "MPTM1 scte35 900 - IN 1000 /DAW\n"
+      "MPTM1 scte35 900 - IN 1000 /DAW\n"
+      "MPTM1 scte35 950 - BOGUS 1000 /DAW\n";
+  TimedMetadataReader::ConsumeBytes(feed.data(), feed.size(), &st, &store);
+  EXPECT_EQ(2u, store.size());  // OUT, IN; re-send and bad class rejected
+}
+
 TEST(TimedMetadataStoreTest, SelectRangeAndTimescale) {
   TimedMetadataStore store;
   store.AddEvent(Ev("a", 90000));   // 1.0 s

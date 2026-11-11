@@ -81,6 +81,32 @@ TEST(EmsgTest, Scte35SchemeUnknownDurationAndReadback) {
   EXPECT_EQ((std::vector<uint8_t>{0xfc, 0x30, 0x11}), emsg.message_data);
 }
 
+TEST(EmsgTest, StoreAssignedEmsgIdUsedAndFallbackKept) {
+  TimedMetadataEvent e = Ev(TimedMetadataKind::kScte35, 1, -1, "1000", {1});
+  EXPECT_EQ(1000u, MakeEventMessage(e).id);
+  e.emsg_id = 77u;
+  EXPECT_EQ(77u, MakeEventMessage(e).id);
+}
+
+TEST(EmsgTest, OutAndInSameIdFromStoreGetDistinctEmsgIds) {
+  TimedMetadataStore store;
+  auto out = Ev(TimedMetadataKind::kScte35, 100, 2700000, "1000", {0xfc});
+  out.scte35_class = Scte35Class::kOut;
+  auto in = Ev(TimedMetadataKind::kScte35, 900, -1, "1000", {0xfd});
+  in.scte35_class = Scte35Class::kIn;
+  ASSERT_TRUE(store.AddEvent(out));
+  ASSERT_TRUE(store.AddEvent(in));
+  uint64_t next = 0;
+  auto sel = store.Select(0, 1000, 90000, std::nullopt, &next);
+  ASSERT_EQ(2u, sel.size());
+  const EventMessage a = MakeEventMessage(sel[0]);
+  const EventMessage b = MakeEventMessage(sel[1]);
+  EXPECT_EQ(1000u, a.id);
+  EXPECT_NE(a.id, b.id);
+  BufferWriter w;
+  EXPECT_GT(WriteEventMessages(sel, &w), 0u);
+}
+
 TEST(EmsgTest, MultipleEventsAppendInOrder) {
   BufferWriter w;
   const size_t n = WriteEventMessages(

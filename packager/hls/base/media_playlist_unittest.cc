@@ -1456,6 +1456,32 @@ TEST_F(TimedMetadataPlaylistTest, DateRangeBeforeContainingSegmentAndPdtEverySeg
   EXPECT_NE(std::string::npos, out.find(kExpectedBody)) << out;
 }
 
+TEST_F(TimedMetadataPlaylistTest, OutAndInSharingIdRenderAsTwoDateRanges) {
+  mutable_hls_params()->add_program_date_time = true;
+  AddScte35("1000", 12, 30, media::Scte35Class::kOut, {0xfc, 0x30});
+  AddScte35("1000", 25, -1, media::Scte35Class::kIn, {0xfc, 0x31});
+  for (int i = 0; i < 3; ++i) {
+    media_playlist_->AddSegment("file" + std::to_string(i + 1) + ".ts",
+                                i * 10 * kTimeScale, 10 * kTimeScale,
+                                kZeroByteOffset, kMBytes);
+  }
+  const std::string out = Written(false);
+  const char kOut[] =
+      "#EXT-X-DATERANGE:ID=\"1000\",START-DATE=\"2025-10-12T14:00:12.000Z\","
+      "PLANNED-DURATION=30.000,SCTE35-OUT=0xFC30\n";
+  const char kIn[] =
+      "#EXT-X-DATERANGE:ID=\"1000\",START-DATE=\"2025-10-12T14:00:25.000Z\","
+      "SCTE35-IN=0xFC31\n";
+  ASSERT_NE(std::string::npos, out.find(kOut)) << out;
+  ASSERT_NE(std::string::npos, out.find(kIn)) << out;
+  size_t count = 0;
+  for (size_t pos = out.find("#EXT-X-DATERANGE:"); pos != std::string::npos;
+       pos = out.find("#EXT-X-DATERANGE:", pos + 1))
+    ++count;
+  EXPECT_EQ(2u, count);
+  EXPECT_EQ(std::string::npos, out.find("PLANNED-DURATION", out.find(kIn)));
+}
+
 TEST_F(TimedMetadataPlaylistTest, NoDateRangeWithoutAnchorOrForId3) {
   media::TimedMetadataEvent id3;
   id3.kind = media::TimedMetadataKind::kId3;

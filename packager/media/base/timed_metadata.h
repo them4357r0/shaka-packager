@@ -45,6 +45,10 @@ struct TimedMetadataEvent {
   Scte35Class scte35_class = Scte35Class::kNone;
   std::string id;
   std::vector<uint8_t> payload;
+  // emsg id assigned by the store so that no two retained events of one kind
+  // share an id (DASH treats equal scheme/value/id as redundant copies). Unset
+  // outside a store; TimedMetadataEmsgId(id) is then used.
+  std::optional<uint32_t> emsg_id;
 };
 
 struct TimedMetadataAnchor {
@@ -84,8 +88,11 @@ class TimedMetadataStore {
   /// Waits until an anchor is set or |timeout_ms| elapsed.
   bool WaitForAnchor(int64_t timeout_ms) const;
 
-  /// Adds an event. Events with an already known (kind, id) are ignored and
-  /// false is returned. The oldest event is evicted when the store is full.
+  /// Adds an event. Events with an already known (kind, id, scte35 class) are
+  /// ignored and false is returned: a splice_insert OUT and its IN (and a CMD)
+  /// legitimately share one id, an exact re-send does not add anything. Events
+  /// of one kind that would share an emsg id get distinct ids (the first
+  /// keeps the plain derivation; later ones are salted with the class). The oldest event is evicted when the store is full.
   bool AddEvent(TimedMetadataEvent event);
 
   /// Signals that the input reached EOF (or failed); no more events follow.

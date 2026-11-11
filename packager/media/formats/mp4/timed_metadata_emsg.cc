@@ -18,7 +18,7 @@ EventMessage MakeEventMessage(const TimedMetadataEvent& event) {
       (event.duration_90k < 0 || event.duration_90k >= 0xFFFFFFFFll)
           ? EventMessage::kUnknownDuration
           : static_cast<uint32_t>(event.duration_90k);
-  emsg.id = TimedMetadataEmsgId(event.id);
+  emsg.id = event.emsg_id.value_or(TimedMetadataEmsgId(event.id));
   emsg.scheme_id_uri = event.kind == TimedMetadataKind::kId3
                            ? kEmsgSchemeId3
                            : kEmsgSchemeScte35;

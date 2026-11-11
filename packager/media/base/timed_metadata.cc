@@ -187,8 +187,28 @@ bool TimedMetadataStore::WaitForAnchor(int64_t timeout_ms) const {
 bool TimedMetadataStore::AddEvent(TimedMetadataEvent event) {
   std::lock_guard<std::mutex> lock(mutex_);
   for (const auto& e : events_) {
-    if (e.kind == event.kind && e.id == event.id)
+    if (e.kind == event.kind && e.id == event.id &&
+        e.scte35_class == event.scte35_class)
       return false;
+  }
+  {
+    auto taken = [&](uint32_t v) {
+      for (const auto& e : events_) {
+        if (e.kind == event.kind &&
+            e.emsg_id.value_or(TimedMetadataEmsgId(e.id)) == v)
+          return true;
+      }
+      return false;
+    };
+    uint32_t candidate = TimedMetadataEmsgId(event.id);
+    if (taken(candidate)) {
+      static const char* const kNames[] = {"NONE", "OUT", "IN", "CMD"};
+      candidate = TimedMetadataEmsgId(
+          event.id + "/" + kNames[static_cast<int>(event.scte35_class)]);
+      while (taken(candidate))
+        ++candidate;
+    }
+    event.emsg_id = candidate;
   }
   if (events_.size() >= max_events_) {
     events_.erase(events_.begin());
