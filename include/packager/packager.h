@@ -80,6 +80,11 @@ struct PackagingParams {
   /// CEA-608 / CEA-708 captions.
   std::vector<CeaCaption> closed_captions;
 
+  /// Path of a FIFO or file with out-of-band timed metadata (ID3, SCTE-35) in
+  /// the MPTM1 line format. Empty (default) disables the feature and leaves
+  /// all output unchanged.
+  std::string timed_metadata_input;
+
   // Parameters for testing. Do not use in production.
   TestParams test_params;
 };

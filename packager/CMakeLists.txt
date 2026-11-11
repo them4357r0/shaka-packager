@@ -205,6 +205,8 @@ add_executable(packager
   app/retired_flags.h
   app/stream_descriptor.cc
   app/stream_descriptor.h
+  app/timed_metadata_flags.cc
+  app/timed_metadata_flags.h
   app/validate_flag.cc
   app/validate_flag.h
   app/widevine_encryption_flags.cc

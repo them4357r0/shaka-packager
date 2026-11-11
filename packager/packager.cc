@@ -45,6 +45,7 @@
 #include <packager/media/base/muxer.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/base/muxer_util.h>
+#include <packager/media/base/timed_metadata.h>
 #include <packager/media/chunking/chunking_handler.h>
 #include <packager/media/chunking/cue_alignment_handler.h>
 #include <packager/media/chunking/segment_coordinator.h>
@@ -887,6 +888,16 @@ struct Packager::PackagerInternal {
   std::unique_ptr<hls::HlsNotifier> hls_notifier;
   BufferCallbackParams buffer_callback_params;
   std::unique_ptr<media::JobManager> job_manager;
+  std::shared_ptr<media::TimedMetadataStore> timed_metadata_store;
+  media::TimedMetadataReader timed_metadata_reader;
+
+  ~PackagerInternal() {
+    timed_metadata_reader.Stop();
+    if (timed_metadata_store &&
+        media::GetGlobalTimedMetadataStore() == timed_metadata_store) {
+      media::SetGlobalTimedMetadataStore(nullptr);
+    }
+  }
 };
 
 Packager::Packager() {}
@@ -907,6 +918,16 @@ Status Packager::Initialize(
   }
 
   std::unique_ptr<PackagerInternal> internal(new PackagerInternal);
+
+  // Out-of-band timed metadata. Must be set up before the notifiers and
+  // muxers are created; they pick the store up at construction.
+  if (!packaging_params.timed_metadata_input.empty()) {
+    internal->timed_metadata_store =
+        std::make_shared<media::TimedMetadataStore>();
+    media::SetGlobalTimedMetadataStore(internal->timed_metadata_store);
+    internal->timed_metadata_reader.Start(packaging_params.timed_metadata_input,
+                                          internal->timed_metadata_store);
+  }
 
   // Create encryption key source if needed.
   if (packaging_params.encryption_params.key_provider != KeyProvider::kNone) {

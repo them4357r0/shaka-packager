@@ -53,6 +53,7 @@ add_library(media_base STATIC
     text_sample.cc
     text_stream_info.cc
     text_track_config.cc
+    timed_metadata.cc
     timestamp_util.cc
     video_stream_info.cc
     video_util.cc
@@ -104,6 +105,7 @@ add_executable(media_base_unittest
     raw_key_source_unittest.cc
     rsa_key_unittest.cc
     test/rsa_test_data.cc
+    timed_metadata_unittest.cc
     video_util_unittest.cc
     widevine_key_source_unittest.cc)
 target_link_libraries(media_base_unittest

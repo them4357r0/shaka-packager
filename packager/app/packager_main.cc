@@ -47,6 +47,7 @@
 #include <packager/app/cpix_encryption_flags.h>
 #include <packager/app/crypto_flags.h>
 #include <packager/app/hls_flags.h>
+#include <packager/app/timed_metadata_flags.h>
 #include <packager/app/manifest_flags.h>
 #include <packager/app/mpd_flags.h>
 #include <packager/app/muxer_flags.h>
@@ -401,6 +402,8 @@ std::optional<PackagingParams> GetPackagingParams() {
 
   packaging_params.temp_dir = absl::GetFlag(FLAGS_temp_dir);
   packaging_params.single_threaded = absl::GetFlag(FLAGS_single_threaded);
+  packaging_params.timed_metadata_input =
+      absl::GetFlag(FLAGS_timed_metadata_input);
 
   AdCueGeneratorParams& ad_cue_generator_params =
       packaging_params.ad_cue_generator_params;
