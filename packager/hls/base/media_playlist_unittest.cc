@@ -12,6 +12,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <absl/strings/str_format.h>
 #include <absl/time/time.h>
@@ -22,6 +23,7 @@
 #include <packager/file/file_closer.h>
 #include <packager/file/file_test_util.h>
 #include <packager/hls_params.h>
+#include <packager/media/base/timed_metadata.h>
 #include <packager/mpd/base/media_info.pb.h>
 #include <packager/version/version.h>
 
@@ -1374,6 +1376,170 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
   const char kMemoryFilePath[] = "memory://media.m3u8";
   EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Timed metadata (--timed_metadata_input): EXT-X-DATERANGE and anchored PDT.
+class TimedMetadataPlaylistTest : public LiveMediaPlaylistTest {
+ protected:
+  void SetUp() override {
+    LiveMediaPlaylistTest::SetUp();
+    store_ = std::make_shared<media::TimedMetadataStore>();
+    media::SetGlobalTimedMetadataStore(store_);
+    // The playlist picks the store up at construction.
+    media_playlist_.reset(new MediaPlaylist(hls_params_, default_file_name_,
+                                            default_name_, default_group_id_));
+    std::string err;
+    ASSERT_TRUE(absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ",
+                                "2025-10-12T14:00:00.000Z", &reference_time_,
+                                &err))
+        << err;
+    media_playlist_->SetReferenceTime(reference_time_);
+    media_playlist_->SetReferenceTimeFromAnchor(true);
+    ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  }
+  void TearDown() override { media::SetGlobalTimedMetadataStore(nullptr); }
+
+  void AddScte35(const std::string& id,
+                 int64_t pts_seconds,
+                 int64_t duration_seconds,
+                 media::Scte35Class cls,
+                 std::vector<uint8_t> payload) {
+    media::TimedMetadataEvent e;
+    e.kind = media::TimedMetadataKind::kScte35;
+    e.id = id;
+    e.pts_90k = pts_seconds * kTimeScale;
+    e.duration_90k = duration_seconds < 0 ? -1 : duration_seconds * kTimeScale;
+    e.scte35_class = cls;
+    e.payload = std::move(payload);
+    ASSERT_TRUE(store_->AddEvent(std::move(e)));
+  }
+
+  std::string Written(bool end_stream) {
+    const char kPath[] = "memory://tm.m3u8";
+    EXPECT_TRUE(media_playlist_->WriteToFile(kPath, false, end_stream));
+    std::string out;
+    EXPECT_TRUE(File::ReadFileToString(kPath, &out));
+    return out;
+  }
+
+  std::shared_ptr<media::TimedMetadataStore> store_;
+  absl::Time reference_time_;
+};
+
+TEST_F(TimedMetadataPlaylistTest, DateRangeBeforeContainingSegmentAndPdtEverySegment) {
+  mutable_hls_params()->add_program_date_time = true;
+  AddScte35("7", 12, 30, media::Scte35Class::kOut, {0xfc, 0x30});
+  AddScte35("8", 25, -1, media::Scte35Class::kIn, {0xfc, 0x31});
+  AddScte35("9", 25, 5, media::Scte35Class::kCmd, {0xab});
+  for (int i = 0; i < 3; ++i) {
+    media_playlist_->AddSegment("file" + std::to_string(i + 1) + ".ts",
+                                i * 10 * kTimeScale, 10 * kTimeScale,
+                                kZeroByteOffset, kMBytes);
+  }
+  const std::string out = Written(false);
+  const char kExpectedBody[] =
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:10.000Z\n"
+      "#EXT-X-DATERANGE:ID=\"7\",START-DATE=\"2025-10-12T14:00:12.000Z\","
+      "PLANNED-DURATION=30.000,SCTE35-OUT=0xFC30\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:20.000Z\n"
+      "#EXT-X-DATERANGE:ID=\"8\",START-DATE=\"2025-10-12T14:00:25.000Z\","
+      "SCTE35-IN=0xFC31\n"
+      "#EXT-X-DATERANGE:ID=\"9\",START-DATE=\"2025-10-12T14:00:25.000Z\","
+      "DURATION=5.000,SCTE35-CMD=0xAB\n"
+      "#EXTINF:10.000,\n"
+      "file3.ts\n";
+  EXPECT_NE(std::string::npos, out.find(kExpectedBody)) << out;
+}
+
+TEST_F(TimedMetadataPlaylistTest, NoDateRangeWithoutAnchorOrForId3) {
+  media::TimedMetadataEvent id3;
+  id3.kind = media::TimedMetadataKind::kId3;
+  id3.id = "t";
+  id3.pts_90k = 5 * kTimeScale;
+  id3.payload = {1};
+  store_->AddEvent(id3);
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  EXPECT_EQ(std::string::npos, Written(false).find("DATERANGE"));
+
+  // Reference time not from the anchor: no DATERANGE either.
+  media_playlist_->SetReferenceTimeFromAnchor(false);
+  AddScte35("x", 15, -1, media::Scte35Class::kNone, {1});
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  EXPECT_EQ(std::string::npos, Written(false).find("DATERANGE"));
+}
+
+TEST_F(TimedMetadataPlaylistTest, DateRangeSlidesOutWithItsSegment) {
+  mutable_hls_params()->add_program_date_time = true;
+  AddScte35("a", 5, -1, media::Scte35Class::kCmd, {1});    // segment 1
+  AddScte35("c", 15, -1, media::Scte35Class::kCmd, {2});   // segment 2
+  AddScte35("d", 35, -1, media::Scte35Class::kCmd, {3});   // segment 4
+  for (int i = 0; i < 4; ++i) {
+    media_playlist_->AddSegment("file" + std::to_string(i + 1) + ".ts",
+                                i * 10 * kTimeScale, 10 * kTimeScale,
+                                kZeroByteOffset, kMBytes);
+  }
+  // Time shift buffer 20 s: segment 1 slid out, segments 2..4 remain.
+  const std::string out = Written(false);
+  EXPECT_NE(std::string::npos, out.find("#EXT-X-MEDIA-SEQUENCE:1\n")) << out;
+  EXPECT_EQ(std::string::npos, out.find("file1.ts")) << out;
+  EXPECT_EQ(std::string::npos, out.find("ID=\"a\"")) << out;
+  EXPECT_NE(std::string::npos,
+            out.find("#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:10.000Z\n"
+                     "#EXT-X-DATERANGE:ID=\"c\"")) << out;
+  EXPECT_NE(std::string::npos, out.find("ID=\"d\"")) << out;
+  // Every retained segment has a PDT: three segments, three tags.
+  size_t count = 0;
+  for (size_t pos = 0;
+       (pos = out.find("#EXT-X-PROGRAM-DATE-TIME", pos)) != std::string::npos;
+       ++pos)
+    ++count;
+  EXPECT_EQ(3u, count) << out;
+}
+
+TEST_F(TimedMetadataPlaylistTest, LateEventGoesToNextSegment) {
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  AddScte35("late", 4, -1, media::Scte35Class::kCmd, {9});  // arrives after seg 1
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  const std::string out = Written(false);
+  EXPECT_NE(std::string::npos,
+            out.find("ID=\"late\",START-DATE=\"2025-10-12T14:00:04.000Z\"")
+            ) << out;
+  EXPECT_LT(out.find("ID=\"late\""), out.find("file2.ts"));
+  EXPECT_GT(out.find("ID=\"late\""), out.find("file1.ts"));
+}
+
+// Without the feature nothing changes: no DATERANGE, PDT only on the first
+// segment.
+TEST_F(LiveMediaPlaylistTest, NoTimedMetadataNoChange) {
+  mutable_hls_params()->add_program_date_time = true;
+  absl::Time reference_time;
+  std::string err;
+  ASSERT_TRUE(absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                              &reference_time, &err));
+  media_playlist_->SetReferenceTime(reference_time);
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  const char kPath[] = "memory://plain.m3u8";
+  ASSERT_TRUE(media_playlist_->WriteToFile(kPath, false, false));
+  std::string out;
+  ASSERT_TRUE(File::ReadFileToString(kPath, &out));
+  EXPECT_EQ(std::string::npos, out.find("DATERANGE"));
+  EXPECT_NE(std::string::npos,
+            out.find("#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+                     "#EXTINF:10.000,\nfile1.ts\n#EXTINF:10.000,\nfile2.ts\n"))
+      << out;
 }
 
 }  // namespace hls

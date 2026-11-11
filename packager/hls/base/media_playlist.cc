@@ -16,11 +16,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
+#include <absl/strings/ascii.h>
+#include <absl/strings/escaping.h>
 #include <absl/strings/str_format.h>
 #include <absl/time/civil_time.h>
 #include <absl/time/time.h>
@@ -270,18 +273,54 @@ ProgramDateTimeEntry::ProgramDateTimeEntry(const absl::Time& program_time)
     : HlsEntry(HlsEntry::EntryType::kProgramDateTime),
       program_time_(program_time) {}
 
-std::string ProgramDateTimeEntry::ToString() {
-  absl::CivilSecond cs =
-      absl::ToCivilSecond(program_time_, absl::UTCTimeZone());
+namespace {
+std::string FormatUtcMillis(const absl::Time& time) {
+  absl::CivilSecond cs = absl::ToCivilSecond(time, absl::UTCTimeZone());
 
-  int64_t total_ms = absl::ToUnixMillis(program_time_);
+  int64_t total_ms = absl::ToUnixMillis(time);
   int ms = static_cast<int>(total_ms % 1000);
   if (ms < 0)
     ms += 1000;  // correction for possible negative times
 
-  return absl::StrFormat(
-      "#EXT-X-PROGRAM-DATE-TIME:%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", cs.year(),
-      cs.month(), cs.day(), cs.hour(), cs.minute(), cs.second(), ms);
+  return absl::StrFormat("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", cs.year(),
+                         cs.month(), cs.day(), cs.hour(), cs.minute(),
+                         cs.second(), ms);
+}
+}  // namespace
+
+std::string ProgramDateTimeEntry::ToString() {
+  return "#EXT-X-PROGRAM-DATE-TIME:" + FormatUtcMillis(program_time_);
+}
+
+DateRangeEntry::DateRangeEntry(const media::TimedMetadataEvent& event,
+                               const absl::Time& start)
+    : HlsEntry(HlsEntry::EntryType::kDateRange), event_(event), start_(start) {}
+
+std::string DateRangeEntry::ToString() {
+  // RFC 8216bis EXT-X-DATERANGE with the SCTE-35 attributes of section 4.4.5.1.
+  std::string out = absl::StrFormat("#EXT-X-DATERANGE:ID=\"%s\",START-DATE=\"%s\"",
+                                    event_.id, FormatUtcMillis(start_));
+  if (event_.duration_90k >= 0) {
+    // A splice-out announces a planned break length; other cues carry a
+    // duration that is known.
+    out += absl::StrFormat(
+        ",%s=%.3f",
+        event_.scte35_class == media::Scte35Class::kOut ? "PLANNED-DURATION"
+                                                         : "DURATION",
+        static_cast<double>(event_.duration_90k) /
+            media::kTimedMetadataTimeScale);
+  }
+  const char* attribute = "SCTE35-CMD";
+  if (event_.scte35_class == media::Scte35Class::kOut)
+    attribute = "SCTE35-OUT";
+  else if (event_.scte35_class == media::Scte35Class::kIn)
+    attribute = "SCTE35-IN";
+  out += absl::StrFormat(
+      ",%s=0x%s", attribute,
+      absl::AsciiStrToUpper(absl::BytesToHexString(std::string_view(
+          reinterpret_cast<const char*>(event_.payload.data()),
+          event_.payload.size()))));
+  return out;
 }
 
 class PlacementOpportunityEntry : public HlsEntry {
@@ -366,6 +405,9 @@ MediaPlaylist::MediaPlaylist(const HlsParams& hls_params,
       group_id_(group_id),
       media_sequence_number_(hls_params_.media_sequence_number),
       reference_time_(absl::InfinitePast()) {
+  if (auto store = media::GetGlobalTimedMetadataStore()) {
+    timed_metadata_cursor_.reset(new media::TimedMetadataCursor(store));
+  }
   // When there's a forced media_sequence_number, start with discontinuity
   if (media_sequence_number_ > 0)
     entries_.emplace_back(new DiscontinuityEntry());
@@ -480,6 +522,10 @@ void MediaPlaylist::AddSegment(const std::string& file_name,
   }
   return AddSegmentInfoEntry(file_name, start_time, duration, start_byte_offset,
                              size);
+}
+
+void MediaPlaylist::SetReferenceTimeFromAnchor(bool from_anchor) {
+  reference_time_from_anchor_ = from_anchor;
 }
 
 void MediaPlaylist::SetReferenceTime(const absl::Time& reference_time) {
@@ -721,11 +767,27 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
       }
     }
 
-    if (is_first_segment || is_discontinuity) {
+    if (is_first_segment || is_discontinuity || reference_time_from_anchor_) {
       const absl::Time program_time =
           reference_time_ +
           absl::Seconds(static_cast<double>(start_time) / time_scale_);
       entries_.emplace_back(new ProgramDateTimeEntry(program_time));
+    }
+  }
+
+  if (timed_metadata_cursor_ && reference_time_from_anchor_ &&
+      reference_time_ != absl::InfinitePast()) {
+    // SCTE-35 cues in this segment's time range are announced right before
+    // the segment, like the segment's EXT-X-PROGRAM-DATE-TIME.
+    for (const auto& event :
+         timed_metadata_cursor_->Take(start_time, duration, time_scale_)) {
+      if (event.kind != media::TimedMetadataKind::kScte35)
+        continue;
+      // pts / 90000 s, kept in integer nanoseconds (100000 / 9 ns per tick).
+      const absl::Time start =
+          reference_time_ +
+          absl::Nanoseconds(event.pts_90k * int64_t{100000} / 9);
+      entries_.emplace_back(new DateRangeEntry(event, start));
     }
   }
 
@@ -799,6 +861,10 @@ void MediaPlaylist::SlideWindow() {
       ext_x_keys.push_back(std::move(*last));
     } else if (entry_type == HlsEntry::EntryType::kExtDiscontinuity) {
       ++discontinuity_sequence_number_;
+    } else if (entry_type == HlsEntry::EntryType::kProgramDateTime ||
+               entry_type == HlsEntry::EntryType::kDateRange) {
+      // Tags that belong to the following segment; they leave the playlist
+      // together with it (see the check below).
     } else {
       DCHECK_EQ(static_cast<int>(entry_type),
                 static_cast<int>(HlsEntry::EntryType::kExtInf));
@@ -810,8 +876,17 @@ void MediaPlaylist::SlideWindow() {
       const bool segment_within_time_shift_buffer =
           current_buffer_depth_ - segment_info.duration_seconds() <
           hls_params_.time_shift_buffer_depth;
-      if (segment_within_time_shift_buffer)
+      if (segment_within_time_shift_buffer) {
+        // Keep the date tags that precede the first retained segment.
+        while (last != entries_.begin()) {
+          const auto& before = *std::prev(last);
+          if (!before || (before->type() != HlsEntry::EntryType::kProgramDateTime &&
+                          before->type() != HlsEntry::EntryType::kDateRange))
+            break;
+          --last;
+        }
         break;
+      }
       current_buffer_depth_ -= segment_info.duration_seconds();
       RemoveOldSegment(segment_info.start_time());
       media_sequence_number_++;

@@ -33,6 +33,7 @@
 #include <packager/media/base/protection_system_ids.h>
 #include <packager/media/base/protection_system_specific_info.h>
 #include <packager/media/base/proto_json_util.h>
+#include <packager/media/base/timed_metadata.h>
 #include <packager/media/base/widevine_pssh_data.pb.h>
 #include <packager/mpd/base/media_info.pb.h>
 
@@ -323,6 +324,30 @@ bool SimpleHlsNotifier::Init() {
   return true;
 }
 
+void SimpleHlsNotifier::ResolveAnchorReferenceTime() {
+  auto store = media::GetGlobalTimedMetadataStore();
+  if (!store)
+    return;
+  std::lock_guard<std::mutex> guard(anchor_mutex_);
+  if (anchor_resolved_)
+    return;
+  anchor_resolved_ = true;
+  // The anchor is the first record of the feed; allow it to arrive shortly
+  // after the packager started.
+  constexpr int64_t kAnchorWaitMs = 10000;
+  if (!store->WaitForAnchor(kAnchorWaitMs)) {
+    LOG(WARNING) << "No timed metadata anchor received; EXT-X-DATERANGE is "
+                    "disabled and EXT-X-PROGRAM-DATE-TIME uses the wall "
+                    "clock at start (if enabled)";
+    return;
+  }
+  const media::TimedMetadataAnchor anchor = *store->anchor();
+  // Wall clock time when media timestamp 0 was: unix_ms - pts / 90000 s.
+  reference_time_ = absl::FromUnixMillis(anchor.unix_ms) -
+                    absl::Nanoseconds(anchor.pts_90k * int64_t{100000} / 9);
+  reference_time_from_anchor_ = true;
+}
+
 bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
                                         const std::string& playlist_name,
                                         const std::string& name,
@@ -343,7 +368,9 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
     LOG(ERROR) << "Failed to set media info for playlist " << playlist_name;
     return false;
   }
+  ResolveAnchorReferenceTime();
   media_playlist->SetReferenceTime(reference_time());
+  media_playlist->SetReferenceTimeFromAnchor(reference_time_from_anchor_);
 
   MediaPlaylist::EncryptionMethod encryption_method =
       MediaPlaylist::EncryptionMethod::kNone;

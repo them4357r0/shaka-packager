@@ -11,6 +11,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -104,6 +105,13 @@ class SimpleHlsNotifier : public HlsNotifier {
 
   absl::Mutex lock_;
   absl::Time reference_time_ = absl::InfinitePast();
+
+  // --timed_metadata_input: the reference time is derived from the anchor
+  // record instead of the wall clock at start, once, shared by all playlists.
+  void ResolveAnchorReferenceTime();
+  std::mutex anchor_mutex_;
+  bool anchor_resolved_ = false;
+  bool reference_time_from_anchor_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(SimpleHlsNotifier);
 };

@@ -19,6 +19,7 @@
 #include <packager/hls_params.h>
 #include <packager/macros/classes.h>
 #include <packager/media/base/fourccs.h>
+#include <packager/media/base/timed_metadata.h>
 #include <packager/mpd/base/bandwidth_estimator.h>
 #include <packager/mpd/base/media_info.pb.h>
 
@@ -36,6 +37,7 @@ class HlsEntry {
     kExtDiscontinuity,
     kExtPlacementOpportunity,
     kProgramDateTime,
+    kDateRange,
   };
   virtual ~HlsEntry();
 
@@ -148,6 +150,12 @@ class MediaPlaylist {
   /// Set the reference time for EXT-X-PROGRAM-DATE-TIME. This is the wall clock
   /// time for when media timestamp is 0.
   virtual void SetReferenceTime(const absl::Time& reference_time);
+
+  /// Marks the reference time as derived from the timed metadata anchor
+  /// (--timed_metadata_input). Only then EXT-X-DATERANGE tags are written and
+  /// EXT-X-PROGRAM-DATE-TIME (when enabled) is written for every segment, so
+  /// the date mapping stays available while the live window slides.
+  virtual void SetReferenceTimeFromAnchor(bool from_anchor);
 
   /// Keyframes must be added in order. It is also called before the containing
   /// segment being called.
@@ -329,6 +337,9 @@ class MediaPlaylist {
 
   // This is the wall clock time when media timestamp is 0.
   absl::Time reference_time_;
+  bool reference_time_from_anchor_ = false;
+  // Only set when --timed_metadata_input is used.
+  std::unique_ptr<media::TimedMetadataCursor> timed_metadata_cursor_;
 
   // Used by kVideoIFrameOnly playlists to track the i-frames (key frames).
   struct KeyFrameInfo {
@@ -353,6 +364,22 @@ class ProgramDateTimeEntry : public HlsEntry {
   ProgramDateTimeEntry& operator=(const ProgramDateTimeEntry&) = delete;
 
   const absl::Time program_time_;
+};
+
+class DateRangeEntry : public HlsEntry {
+ public:
+  /// @param event a SCTE-35 event; |start| is its wall clock start date.
+  DateRangeEntry(const media::TimedMetadataEvent& event,
+                 const absl::Time& start);
+
+  std::string ToString() override;
+
+ private:
+  DateRangeEntry(const DateRangeEntry&) = delete;
+  DateRangeEntry& operator=(const DateRangeEntry&) = delete;
+
+  const media::TimedMetadataEvent event_;
+  const absl::Time start_;
 };
 
 class EncryptionInfoEntry : public HlsEntry {
