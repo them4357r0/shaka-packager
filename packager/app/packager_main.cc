@@ -674,7 +674,9 @@ std::optional<PackagingParams> GetPackagingParams() {
 int PackagerMain(int argc, char** argv) {
   absl::FlagsUsageConfig flag_config;
   flag_config.version_string = []() -> std::string {
-    return "packager version " + shaka::Packager::GetLibraryVersion() + "\n";
+    // "+mp-tm1": capability probe for --timed_metadata_input (MPTM1 v1).
+    return "packager version " + shaka::Packager::GetLibraryVersion() +
+           "+mp-tm1\n";
   };
   flag_config.contains_help_flags =
       [](absl::string_view flag_file_name) -> bool { return true; };
